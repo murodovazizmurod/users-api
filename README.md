@@ -19,6 +19,7 @@ with Docker, Alembic migrations and a Celery worker.
 - [Key design decisions](#key-design-decisions)
 - [Background jobs](#background-jobs)
 - [Configuration](#configuration)
+- [Postman collection](#postman-collection)
 - [Testing and linting](#testing-and-linting)
 - [Deliberate simplifications](#deliberate-simplifications)
 
@@ -335,10 +336,49 @@ Everything comes from environment variables (or `.env`); see
 
 ---
 
+## Postman collection
+
+[postman/](postman/) holds a ready-to-run collection and a local environment:
+
+| File | Purpose |
+|---|---|
+| `users-api.postman_collection.json` | 23 requests across Health, Authentication, Profile, Users (admin) and Access control checks |
+| `users-api.postman_environment.json` | `baseUrl` and the bootstrap administrator credentials |
+
+Import both into Postman, pick the **Users API — local** environment and run the
+requests top to bottom. Tokens and identifiers are captured into collection
+variables by test scripts, so nothing has to be copied by hand: signing up
+generates a unique address, logging in stores the token pair, and the admin
+folder authenticates with its own token.
+
+Every request carries assertions, so `Run collection` doubles as a smoke test of
+a deployment — it also runs headless:
+
+```bash
+npx newman run postman/users-api.postman_collection.json \
+  -e postman/users-api.postman_environment.json
+```
+
+One step is manual by design: verification codes are written to the log rather
+than emailed, so before **Verify account** read the code from
+`docker compose logs --tail 50 api` and paste it into the `verificationCode`
+variable. Supplying it on the command line works too:
+
+```bash
+npx newman run postman/users-api.postman_collection.json \
+  -e postman/users-api.postman_environment.json \
+  --env-var userEmail=<address> --env-var verificationCode=<code>
+```
+
+The **Access control checks** folder is deliberately made of negative cases —
+403 for a regular user on an admin route, 401 without a token, a blocked
+self-escalation, a duplicate registration and a wrong password — since those
+boundaries are the point of the module.
+
 ## Testing and linting
 
 ```bash
-pytest                 # 36 tests, SQLite in-memory, no external services
+pytest                 # 39 tests, SQLite in-memory, no external services
 ruff check .
 alembic check          # verifies migrations match the models
 ```
