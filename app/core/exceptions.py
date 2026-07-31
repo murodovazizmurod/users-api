@@ -16,8 +16,16 @@ class AppError(Exception):
     error_code: str = "bad_request"
     message: str = "Bad request"
 
-    def __init__(self, message: str | None = None, **details: Any) -> None:
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+        **details: Any,
+    ) -> None:
         self.message = message or self.message
+        # Extra response headers, e.g. Retry-After on a rate limit rejection.
+        self.headers = headers
         self.details = details
         super().__init__(self.message)
 

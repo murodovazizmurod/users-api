@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EmailNotVerifiedError, InvalidTokenError, PermissionDeniedError
+from app.core.rate_limit import RateLimiter, build_rate_limiter
 from app.db.session import get_session
 from app.modules.auth.service import AuthService
 from app.modules.users.models import User
@@ -37,6 +39,31 @@ def get_auth_service(
 
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+
+@lru_cache
+def _rate_limiter() -> RateLimiter:
+    """One limiter per process; the Redis client pools its own connections."""
+    return build_rate_limiter()
+
+
+def get_rate_limiter() -> RateLimiter:
+    return _rate_limiter()
+
+
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+
+
+def client_address(request: Request) -> str:
+    """Best-effort client identity for rate limiting.
+
+    uvicorn runs with ``--proxy-headers``, so behind a trusted proxy
+    ``request.client`` already reflects the forwarded address.
+    """
+    return request.client.host if request.client else "unknown"
+
+
+ClientAddress = Annotated[str, Depends(client_address)]
 
 
 async def get_current_user(

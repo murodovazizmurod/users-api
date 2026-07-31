@@ -264,6 +264,16 @@ are single-use, expire, and lock after `VERIFICATION_MAX_ATTEMPTS` failures.
 wrong password — and still hashes a dummy value, so the two paths take
 comparable time. `/auth/verify/resend` always returns the same message.
 
+**Rate limiting that only charges failures.** `/auth/login` counts *failed*
+attempts per client address and email, and a successful sign-in clears the
+counter — a legitimate user is never locked out by their own typos, while a
+password-guessing run exhausts its budget and gets 429 with `Retry-After`.
+Registration is limited per address and code resends per email, since every
+accepted resend sends a message. Counters live in Redis so all replicas share
+one budget, and the limiter **fails open**: if Redis is unreachable the request
+is allowed and a warning is logged, because losing the broker should degrade
+abuse protection rather than take authentication offline.
+
 **Unverified users may log in.** They need a session to see their own profile
 and to finish verification. Endpoints demanding a confirmed account use the
 `get_verified_user` dependency.
@@ -328,6 +338,11 @@ Everything comes from environment variables (or `.env`); see
 | `VERIFICATION_CHANNEL` | `email` | `email` or `sms` |
 | `VERIFICATION_CODE_TTL_MINUTES` | `15` | Code lifetime |
 | `UNVERIFIED_USER_TTL_DAYS` | `2` | Retention window for unverified accounts |
+| `RATE_LIMIT_ENABLED` | `true` | Master switch for the limiter |
+| `RATE_LIMIT_REDIS_URL` | `redis://…/2` | Shared counters; empty falls back to per-process ones |
+| `LOGIN_MAX_FAILURES` | `10` per 15 min | Failed sign-ins per address and email |
+| `SIGNUP_MAX_REQUESTS` | `20` per hour | Registrations per client address |
+| `RESEND_MAX_REQUESTS` | `3` per hour | Verification codes per email address |
 | `API_PREFIX` | empty | Set to `/api/v1` to serve a versioned API |
 | `FIRST_ADMIN_EMAIL` / `_PASSWORD` | — | Bootstrap admin; skipped when blank or when an admin exists |
 
@@ -378,7 +393,8 @@ boundaries are the point of the module.
 ## Testing and linting
 
 ```bash
-pytest                 # 39 tests, SQLite in-memory, no external services
+pytest                 # 55 tests, SQLite in-memory, no external services
+pytest --cov=app       # 88% statement coverage
 ruff check .
 alembic check          # verifies migrations match the models
 ```
@@ -386,7 +402,14 @@ alembic check          # verifies migrations match the models
 Covered: the full signup → verify → login → refresh cycle, single-use and
 expiring codes, refresh rotation and replay detection, account-enumeration
 resistance, every role restriction on every endpoint, pagination and filtering,
-password change, retention selection, and cascade deletes.
+password change, and cascade deletes.
+
+The Celery tasks are tested through `.apply()` against a temporary SQLite file,
+so the retention rule, its batching loop and the `asyncio.run` wrapper are
+exercised for real rather than mocked — no broker required. Rate limiting is
+disabled for the suite at large and switched back on in
+`tests/test_rate_limit.py`, where the clock is advanced with a monkeypatch
+instead of sleeping.
 
 ---
 
@@ -401,23 +424,19 @@ approach.
    `Notifier` protocol, delivery dispatched to Celery so a slow provider never
    blocks signup, retries with backoff, templated messages, and a suppression
    list fed by bounce webhooks.
-2. **No rate limiting** ([app/modules/auth/service.py](app/modules/auth/service.py)) —
-   `/auth/login` and `/auth/verify/resend` are the obvious targets. In
-   production: a Redis token bucket per IP and per address, plus temporary
-   account lockout after repeated failures.
-3. **Access tokens cannot be revoked before expiry**
+2. **Access tokens cannot be revoked before expiry**
    ([app/modules/auth/service.py](app/modules/auth/service.py)) — logout revokes
    the refresh token only. Immediate revocation needs a Redis deny-list of
    `jti`s checked on every request; at a 15-minute TTL the trade-off is
    deliberate.
-4. **Password strength is length plus a letter/digit mix**
+3. **Password strength is length plus a letter/digit mix**
    ([app/modules/users/schemas.py](app/modules/users/schemas.py)) — production
    would add a breached-password check (HIBP k-anonymity) and a
    common-password dictionary.
-5. **Administrative email change keeps the verification status**
+4. **Administrative email change keeps the verification status**
    ([app/modules/users/service.py](app/modules/users/service.py)) — the correct
    flow stores a pending address, sends a code to it, and swaps only once
    confirmed, so an account is never left in a state the retention job would
    delete.
-6. **No audit log** — administrative actions are logged, not stored. A
+5. **No audit log** — administrative actions are logged, not stored. A
    regulated deployment would persist an append-only audit table.

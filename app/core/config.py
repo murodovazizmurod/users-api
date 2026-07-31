@@ -71,6 +71,27 @@ class Settings(BaseSettings):
     CLEANUP_INTERVAL_MINUTES: int = 60
     CLEANUP_BATCH_SIZE: int = 1000
 
+    # --- Rate limiting ----------------------------------------------------
+    # Protects the unauthenticated endpoints from brute force and from being
+    # used to spam somebody's inbox.
+    RATE_LIMIT_ENABLED: bool = True
+    # Shared counters live in Redis so every replica sees the same budget.
+    # Leave empty to fall back to per-process counters, which are fine for a
+    # single-process local run but do not coordinate across workers.
+    RATE_LIMIT_REDIS_URL: str = "redis://localhost:6379/2"
+    # Failed logins per window, keyed by client address and email. A successful
+    # login clears the counter, so a legitimate user is never locked out by
+    # their own typos.
+    LOGIN_MAX_FAILURES: int = 10
+    LOGIN_FAILURE_WINDOW_SECONDS: int = 900
+    # Registrations per window, keyed by client address. Kept generous because
+    # many users can share one address behind NAT.
+    SIGNUP_MAX_REQUESTS: int = 20
+    SIGNUP_WINDOW_SECONDS: int = 3600
+    # Verification code requests per window, keyed by email.
+    RESEND_MAX_REQUESTS: int = 3
+    RESEND_WINDOW_SECONDS: int = 3600
+
     # --- Celery -----------------------------------------------------------
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"

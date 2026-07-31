@@ -15,6 +15,9 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-used-in-production")
 os.environ.setdefault("FIRST_ADMIN_EMAIL", "")
 os.environ.setdefault("FIRST_ADMIN_PASSWORD", "")
+# Off by default so the suite is not throttled by its own repeated logins;
+# tests/test_rate_limit.py switches it on for the cases that need it.
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -22,7 +25,8 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
-from app.api.deps import get_notifier_dep  # noqa: E402
+from app.api.deps import get_notifier_dep, get_rate_limiter  # noqa: E402
+from app.core.rate_limit import InMemoryRateLimiter  # noqa: E402
 from app.db.registry import Base  # noqa: E402
 from app.db.session import build_engine, get_session  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
@@ -87,9 +91,17 @@ def notifier() -> RecordingNotifier:
     return RecordingNotifier()
 
 
+@pytest.fixture
+def rate_limiter() -> InMemoryRateLimiter:
+    """A limiter with counters isolated to a single test."""
+    return InMemoryRateLimiter()
+
+
 @pytest_asyncio.fixture
 async def client(
-    session_factory: async_sessionmaker[AsyncSession], notifier: RecordingNotifier
+    session_factory: async_sessionmaker[AsyncSession],
+    notifier: RecordingNotifier,
+    rate_limiter: InMemoryRateLimiter,
 ) -> AsyncIterator[AsyncClient]:
     """HTTP client bound to the app with test doubles wired in."""
 
@@ -99,6 +111,7 @@ async def client(
 
     fastapi_app.dependency_overrides[get_session] = override_get_session
     fastapi_app.dependency_overrides[get_notifier_dep] = lambda: notifier
+    fastapi_app.dependency_overrides[get_rate_limiter] = lambda: rate_limiter
 
     transport = ASGITransport(app=fastapi_app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:

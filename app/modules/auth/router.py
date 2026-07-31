@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from app.api.deps import AuthServiceDep, CurrentUser
+from app.api.deps import AuthServiceDep, ClientAddress, CurrentUser, RateLimiterDep
 from app.api.responses import error_responses
+from app.core.exceptions import AuthenticationError
+from app.core.rate_limit import enforce, login_rule, resend_rule, signup_rule
 from app.modules.auth.schemas import (
     LoginRequest,
     LogoutRequest,
@@ -31,11 +33,22 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         "already be registered. The account starts in the **unverified** state and a "
         "one-time verification code is sent through the configured channel — in "
         "development it is written to the application log. Unverified accounts are "
-        "deleted automatically after the retention period."
+        "deleted automatically after the retention period.\n\n"
+        "Rate limited per client address."
     ),
-    responses=error_responses(409, 422),
+    responses=error_responses(409, 422, 429),
 )
-async def signup(payload: UserCreate, auth_service: AuthServiceDep) -> SignupResponse:
+async def signup(
+    payload: UserCreate,
+    auth_service: AuthServiceDep,
+    limiter: RateLimiterDep,
+    client: ClientAddress,
+) -> SignupResponse:
+    rule = signup_rule()
+    key = f"ratelimit:signup:{client}"
+    await enforce(limiter, key, rule, "Too many registrations from this address")
+    await limiter.hit(key, rule)
+
     user = await auth_service.signup(payload)
     return SignupResponse(
         user=UserRead.model_validate(user),
@@ -51,12 +64,31 @@ async def signup(payload: UserCreate, auth_service: AuthServiceDep) -> SignupRes
     description=(
         "Exchanges email and password for a short-lived access token and a long-lived "
         "refresh token. Unverified users can sign in, but endpoints that require a "
-        "confirmed account will reject their access token with 403."
+        "confirmed account will reject their access token with 403.\n\n"
+        "**Failed** attempts are rate limited per client address and email; a "
+        "successful sign-in clears the counter, so a legitimate user is never locked "
+        "out by their own typos. Exceeding the budget returns 429 with `Retry-After`."
     ),
-    responses=error_responses(401, 403, 422),
+    responses=error_responses(401, 403, 422, 429),
 )
-async def login(payload: LoginRequest, auth_service: AuthServiceDep) -> TokenPair:
-    user = await auth_service.authenticate(payload.email, payload.password)
+async def login(
+    payload: LoginRequest,
+    auth_service: AuthServiceDep,
+    limiter: RateLimiterDep,
+    client: ClientAddress,
+) -> TokenPair:
+    rule = login_rule()
+    key = f"ratelimit:login:{client}:{payload.email.strip().lower()}"
+    await enforce(limiter, key, rule, "Too many failed sign-in attempts")
+
+    try:
+        user = await auth_service.authenticate(payload.email, payload.password)
+    except AuthenticationError:
+        # Only wrong credentials consume the budget.
+        await limiter.hit(key, rule)
+        raise
+
+    await limiter.reset(key)
     return await auth_service.issue_token_pair(user)
 
 
@@ -99,13 +131,21 @@ async def verify(payload: VerifyRequest, auth_service: AuthServiceDep) -> UserRe
     description=(
         "Issues a fresh code and invalidates any previous one. The response is "
         "identical whether or not the address is registered, so the endpoint cannot be "
-        "used to enumerate accounts."
+        "used to enumerate accounts.\n\n"
+        "Rate limited per email address, since every accepted call sends a message."
     ),
-    responses=error_responses(422),
+    responses=error_responses(422, 429),
 )
 async def resend_verification(
-    payload: ResendVerificationRequest, auth_service: AuthServiceDep
+    payload: ResendVerificationRequest,
+    auth_service: AuthServiceDep,
+    limiter: RateLimiterDep,
 ) -> MessageResponse:
+    rule = resend_rule()
+    key = f"ratelimit:resend:{payload.email.strip().lower()}"
+    await enforce(limiter, key, rule, "Too many verification codes requested for this address")
+    await limiter.hit(key, rule)
+
     await auth_service.resend_verification_code(payload.email)
     return MessageResponse(
         message="If the address belongs to an unverified account, a new code has been sent."
