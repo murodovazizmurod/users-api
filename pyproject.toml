@@ -1,0 +1,26 @@
+[project]
+name = "users-api"
+version = "1.0.0"
+description = "User management module: registration, authentication, verification and administration."
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "ANN"]
+ignore = [
+    "ANN401",  # Any is unavoidable at framework boundaries (SQLAlchemy hooks)
+    "B008",    # FastAPI dependencies are function calls in defaults by design
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["ANN", "E501"]
+"tests/*" = ["ANN"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
