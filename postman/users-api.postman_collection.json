@@ -20,7 +20,8 @@
     { "key": "refreshToken", "value": "", "type": "string" },
     { "key": "adminAccessToken", "value": "", "type": "string" },
     { "key": "userId", "value": "", "type": "string" },
-    { "key": "createdUserId", "value": "", "type": "string" }
+    { "key": "createdUserId", "value": "", "type": "string" },
+    { "key": "profilePhone", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -369,12 +370,23 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"first_name\": \"Augusta\",\n  \"phone\": \"+14155552671\"\n}"
+              "raw": "{\n  \"first_name\": \"Augusta\",\n  \"phone\": \"{{profilePhone}}\"\n}"
             },
             "url": { "raw": "{{baseUrl}}/me", "host": ["{{baseUrl}}"], "path": ["me"] },
-            "description": "Partially updates the caller's own profile: only the fields present in the body are changed. Privileged fields (`email`, `role`, `is_active`, `is_verified`) are reserved for administrators and are rejected here."
+            "description": "Partially updates the caller's own profile: only the fields present in the body are changed. Privileged fields (`email`, `role`, `is_active`, `is_verified`) are reserved for administrators and are rejected here.\n\nThe phone number is generated per run: it is unique across accounts, so a fixed value would collide with 409 on a database that already holds it."
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Phone numbers are unique per account, so keep this run's value distinct.",
+                  "const suffix = String(Date.now()).slice(-7);",
+                  "pm.collectionVariables.set('profilePhone', `+1415${suffix}`);"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
