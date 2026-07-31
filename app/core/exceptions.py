@@ -84,6 +84,11 @@ class EmailAlreadyRegisteredError(ConflictError):
     message = "A user with this email already exists"
 
 
+class PhoneAlreadyRegisteredError(ConflictError):
+    error_code = "phone_already_registered"
+    message = "A user with this phone number already exists"
+
+
 class AlreadyVerifiedError(ConflictError):
     error_code = "already_verified"
     message = "This account is already verified"

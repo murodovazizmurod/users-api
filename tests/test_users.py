@@ -175,6 +175,49 @@ async def test_admin_cannot_delete_themselves(
     assert response.status_code == 409
 
 
+async def test_taking_another_users_phone_conflicts(
+    client: AsyncClient, admin_headers: dict[str, str], user_headers: dict[str, str]
+) -> None:
+    """A duplicate phone must be a 409, not a 500 from the unique index."""
+    taken = await client.patch("/me", headers=admin_headers, json={"phone": "+14155552671"})
+    assert taken.status_code == 200, taken.text
+
+    clash = await client.patch("/me", headers=user_headers, json={"phone": "+14155552671"})
+    assert clash.status_code == 409
+    assert clash.json()["error"] == "phone_already_registered"
+
+
+async def test_signup_with_a_taken_phone_conflicts(
+    client: AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    await client.patch("/me", headers=admin_headers, json={"phone": "+14155552671"})
+
+    response = await client.post(
+        "/auth/signup",
+        json={
+            "email": "newcomer@example.com",
+            "password": "Str0ngPassw0rd",
+            "phone": "+14155552671",
+        },
+    )
+    assert response.status_code == 409
+    # The message must name the phone, not the email, or it misleads the caller.
+    assert response.json()["error"] == "phone_already_registered"
+
+
+async def test_keeping_your_own_phone_is_not_a_conflict(
+    client: AsyncClient, user_headers: dict[str, str]
+) -> None:
+    first = await client.patch("/me", headers=user_headers, json={"phone": "+14155552671"})
+    assert first.status_code == 200
+
+    again = await client.patch(
+        "/me", headers=user_headers, json={"phone": "+14155552671", "first_name": "Same"}
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["first_name"] == "Same"
+
+
 async def test_password_change_requires_the_current_password(
     client: AsyncClient, user_headers: dict[str, str]
 ) -> None:

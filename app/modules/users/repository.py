@@ -49,6 +49,13 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return bool(result.scalar_one())
 
+    async def phone_exists(self, phone: str, *, exclude_id: uuid.UUID | None = None) -> bool:
+        stmt = select(func.count()).select_from(User).where(User.phone == phone)
+        if exclude_id is not None:
+            stmt = stmt.where(User.id != exclude_id)
+        result = await self.session.execute(stmt)
+        return bool(result.scalar_one())
+
     async def admin_exists(self) -> bool:
         stmt = select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)
         result = await self.session.execute(stmt)

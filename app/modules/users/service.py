@@ -14,6 +14,7 @@ from app.core.exceptions import (
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
     PermissionDeniedError,
+    PhoneAlreadyRegisteredError,
     UserNotFoundError,
 )
 from app.core.pagination import Page, PaginationParams
@@ -26,6 +27,22 @@ logger = logging.getLogger(__name__)
 
 # Fields on UserAdminUpdate that only an administrator may set.
 ADMIN_ONLY_FIELDS = frozenset({"email", "role", "is_active", "is_verified"})
+
+
+def conflict_from_integrity_error(exc: IntegrityError) -> ConflictError:
+    """Map a unique-constraint violation onto the field that caused it.
+
+    Uniqueness is checked before writing, but that check and the write are not
+    atomic: two concurrent requests can both pass it. The unique index is the
+    real guarantee, so its violation is translated here instead of surfacing
+    as a 500.
+    """
+    detail = str(getattr(exc, "orig", exc)).lower()
+    if "phone" in detail:
+        return PhoneAlreadyRegisteredError()
+    if "email" in detail:
+        return EmailAlreadyRegisteredError()
+    return ConflictError("The request conflicts with an existing record")
 
 
 class UserService:
@@ -57,6 +74,8 @@ class UserService:
         email = self.normalize_email(payload.email)
         if await self.repository.email_exists(email):
             raise EmailAlreadyRegisteredError()
+        if payload.phone and await self.repository.phone_exists(payload.phone):
+            raise PhoneAlreadyRegisteredError()
 
         user = User(
             email=email,
@@ -74,10 +93,8 @@ class UserService:
             if commit:
                 await self.session.commit()
         except IntegrityError as exc:
-            # Two concurrent signups can both pass the check above; the unique
-            # index is the real guarantee, so translate its violation here.
             await self.session.rollback()
-            raise EmailAlreadyRegisteredError() from exc
+            raise conflict_from_integrity_error(exc) from exc
 
         await self.session.refresh(user)
         logger.info("User created: id=%s email=%s role=%s", user.id, user.email, user.role.value)
@@ -143,6 +160,11 @@ class UserService:
             # and swap only once confirmed, so the account is never left in a
             # state the retention job could delete.
 
+        if changes.get("phone") and await self.repository.phone_exists(
+            changes["phone"], exclude_id=user.id
+        ):
+            raise PhoneAlreadyRegisteredError()
+
         if changes.get("is_verified") is True and not user.is_verified:
             user.verified_at = datetime.now(UTC)
         elif changes.get("is_verified") is False:
@@ -151,7 +173,12 @@ class UserService:
         for field, value in changes.items():
             setattr(user, field, value)
 
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise conflict_from_integrity_error(exc) from exc
+
         await self.session.refresh(user)
         logger.info("User updated: id=%s fields=%s by=%s", user.id, sorted(changes), actor.id)
         return user
